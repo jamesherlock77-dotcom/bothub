@@ -12,7 +12,6 @@ const {
   EmbedBuilder,
   AttachmentBuilder,
   Events,
-  ComponentType,
 } = require('discord.js');
 
 const { SUPPORT_TICKET_CHANNEL_ID, TICKET_PING_ROLE_ID, SUPPORT_BANNER_FILENAME, SUPPORT_BANNER_PATH } = require('./config');
@@ -90,159 +89,187 @@ function createTicketModal(categoryLabel = 'General') {
   return modal;
 }
 
+function buildSupportPanelRow() {
+  // We post buttons here for new panels, but existing panels may have a select menu
+  // with custom_id "support_panel_category_select" — we need to handle both.
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('ticket_category_discord')
+      .setLabel('Discord Issue')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('ticket_category_report')
+      .setLabel('Report A Discord User')
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
+
 async function registerTicketHandlers(client) {
-  // Register a basic support panel only-if-missing sender on startup
+  // Ensure a support panel is present (sends one if missing). Uses buttons.
   async function refreshSupportPanel() {
-    const channel = await client.channels.fetch(SUPPORT_TICKET_CHANNEL_ID);
-    if (!channel || !channel.isTextBased()) return;
-    const messages = await channel.messages.fetch({ limit: 50 });
-    const already = messages.find(m => m.author && m.author.id === client.user.id && m.embeds.length && m.embeds[0].title === 'Discord Support System');
-    if (already) return;
+    try {
+      const channel = await client.channels.fetch(SUPPORT_TICKET_CHANNEL_ID).catch(() => null);
+      if (!channel || !channel.isTextBased()) return;
+      const messages = await channel.messages.fetch({ limit: 50 }).catch(() => new Map());
+      const already = Array.from(messages.values()).find(m => m.author && m.author.id === client.user.id && m.embeds.length && m.embeds[0].title === 'Discord Support System');
+      if (already) return;
 
-    const embed = buildSupportEmbed();
-    if (SUPPORT_BANNER_PATH && fs.existsSync(SUPPORT_BANNER_PATH)) {
-      const file = new AttachmentBuilder(SUPPORT_BANNER_PATH, { name: SUPPORT_BANNER_FILENAME });
-      await channel.send({ embeds: [embed], files: [file], components: [buildSupportPanelRow()] });
-    } else {
-      await channel.send({ embeds: [embed], components: [buildSupportPanelRow()] });
+      const embed = buildSupportEmbed();
+      if (SUPPORT_BANNER_PATH && fs.existsSync(SUPPORT_BANNER_PATH)) {
+        const file = new AttachmentBuilder(SUPPORT_BANNER_PATH, { name: SUPPORT_BANNER_FILENAME });
+        await channel.send({ embeds: [embed], files: [file], components: [buildSupportPanelRow()] });
+      } else {
+        await channel.send({ embeds: [embed], components: [buildSupportPanelRow()] });
+      }
+    } catch (err) {
+      console.error('Failed to refresh support panel', err);
     }
   }
 
-  function buildSupportPanelRow() {
-    const select = /* For simplicity we add a pair of buttons instead of the select dropdown in the Python version */ [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('ticket_category_discord')
-          .setLabel('Discord Issue')
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId('ticket_category_report')
-          .setLabel('Report A Discord User')
-          .setStyle(ButtonStyle.Secondary),
-      ),
-    ];
-    return select[0];
-  }
-
+  // Interaction handler (handles buttons, modals, and now select menus)
   client.on(Events.InteractionCreate, async (interaction) => {
-    // Panel button click -> show modal
-    if (interaction.isButton()) {
-      if (interaction.customId === 'ticket_category_discord' || interaction.customId === 'ticket_category_report') {
-        const label = interaction.customId === 'ticket_category_discord' ? 'Discord Issue' : 'Report A Discord User';
-        const modal = createTicketModal(label);
-        await interaction.showModal(modal);
-      }
-
-      if (interaction.customId && interaction.customId.startsWith('ticket_close_')) {
-        // Ticket close button (should be used inside thread message)
-        if (!interaction.channel.isThread()) {
-          await interaction.reply({ content: 'This can only be used inside a ticket thread.', ephemeral: true });
-          return;
-        }
-
-        // permissions check like in Python omitted for brevity; add your own
-        // Close the thread and flag closed in DB
-        try {
-          await interaction.deferReply({ ephemeral: true });
-          try { await interaction.channel.send(`🔒 Ticket closed by ${interaction.user}`); } catch {}
-          try { await interaction.channel.setArchived(true); } catch {}
-          // Update DB
-          const db = loadJson(TICKETS_DB_FILE, { next_number: 1, tickets: {} });
-          const ticket = db.tickets[interaction.channel.id];
-          if (ticket) {
-            ticket.closed = true;
-            saveJson(TICKETS_DB_FILE, db);
-            await backupFileToChannel(client, require('./config').TICKET_LOG_CHANNEL_ID, TICKETS_DB_FILE, path.basename(TICKETS_DB_FILE));
-          }
-          await interaction.editReply({ content: 'Ticket closed.', ephemeral: true });
-        } catch (err) {
-          console.error('Failed to close ticket', err);
-          await interaction.editReply({ content: 'Failed to close ticket.', ephemeral: true });
-        }
-      }
-    }
-
-    // Modal submit
-    if (interaction.isModalSubmit()) {
-      if (!interaction.customId.startsWith('ticket_modal::')) return;
-      await interaction.deferReply({ ephemeral: true });
-
-      const category = interaction.customId.split('::')[1] || 'General';
-      const about = interaction.fields.getTextInputValue('about_user');
-      const issue = interaction.fields.getTextInputValue('issue');
-      const proof = interaction.fields.getTextInputValue('proof');
-      const happened = interaction.fields.getTextInputValue('happened_here');
-
-      if (happened.trim().toLowerCase().startsWith('n')) {
-        await interaction.followUp({ content: "We can only moderate situations that happen in this Discord server — this issue can't be filed as a ticket here.", ephemeral: true });
+    try {
+      // 1) If it's a select menu from the existing support panel, show the modal
+      if (interaction.isStringSelectMenu && interaction.isStringSelectMenu() && interaction.customId === 'support_panel_category_select') {
+        // interaction.values[0] holds the selected category
+        const categoryLabel = interaction.values && interaction.values[0] ? interaction.values[0] : 'General';
+        const modal = createTicketModal(categoryLabel);
+        await interaction.showModal(modal).catch(err => {
+          console.error('Failed to show ticket modal from select:', err);
+          try { interaction.reply({ content: "Couldn't open the ticket form.", ephemeral: true }).catch(() => {}); } catch {}
+        });
         return;
       }
 
-      // Create thread in SUPPORT_TICKET_CHANNEL_ID
-      try {
-        const channel = await client.channels.fetch(SUPPORT_TICKET_CHANNEL_ID);
-        if (!channel || !channel.isTextBased()) {
-          await interaction.followUp({ content: 'Ticket channel not found.', ephemeral: true });
+      // 2) Button click -> show modal (our modern panel uses buttons)
+      if (interaction.isButton && interaction.isButton()) {
+        if (interaction.customId === 'ticket_category_discord' || interaction.customId === 'ticket_category_report') {
+          const label = interaction.customId === 'ticket_category_discord' ? 'Discord Issue' : 'Report A Discord User';
+          const modal = createTicketModal(label);
+          await interaction.showModal(modal).catch(err => {
+            console.error('Failed to show ticket modal from button:', err);
+            try { interaction.reply({ content: "Couldn't open the ticket form.", ephemeral: true }).catch(() => {}); } catch {}
+          });
           return;
         }
 
-        // build thread name like "📈┃1-ticket"
-        const db = loadJson(TICKETS_DB_FILE, { next_number: 1, tickets: {} });
-        const number = db.next_number++;
-        const threadName = `📈┃${number}-ticket`;
+        if (interaction.customId && interaction.customId.startsWith('ticket_close_')) {
+          // Close button inside a thread
+          try {
+            if (!interaction.channel.isThread()) {
+              await interaction.reply({ content: 'This can only be used inside a ticket thread.', ephemeral: true });
+              return;
+            }
+          } catch {}
 
-        const thread = await channel.threads.create({
-          name: threadName,
-          autoArchiveDuration: 60 * 24, // 24h
-          type: 11, // Private thread (ChannelType.PrivateThread numeric) - if unavailable fallback below
-        }).catch(async (err) => {
-          // fallback to public thread
-          return await channel.threads.create({ name: threadName, autoArchiveDuration: 60 * 24, type: 10 });
-        });
+          try {
+            await interaction.deferReply({ ephemeral: true });
+            try { await interaction.channel.send(`🔒 Ticket closed by ${interaction.user}`); } catch {}
+            try { await interaction.channel.setArchived(true); } catch {}
+            // Mark ticket as closed in tickets DB if present
+            const db = loadJson(TICKETS_DB_FILE, { next_number: 1, tickets: {} });
+            const ticket = db.tickets && db.tickets[interaction.channel.id];
+            if (ticket) {
+              ticket.closed = true;
+              saveJson(TICKETS_DB_FILE, db);
+              try { await backupFileToChannel(client, require('./config').TICKET_LOG_CHANNEL_ID, TICKETS_DB_FILE, path.basename(TICKETS_DB_FILE)); } catch {}
+            }
+            await interaction.editReply({ content: 'Ticket closed.', ephemeral: true }).catch(() => {});
+          } catch (err) {
+            console.error('Error closing ticket via button:', err);
+            try { await interaction.editReply({ content: 'Failed to close ticket.', ephemeral: true }).catch(() => {}); } catch {}
+          }
+          return;
+        }
+      }
 
-        // store ticket
-        db.tickets[thread.id] = {
-          number,
-          opener_id: interaction.user.id,
-          category,
-          answers: {
-            'Is your issue about another Discord user?': about,
-            'What is the issue you are experiencing?': issue,
-            'Do you have proof?': proof,
-            'Did the issue happen in this Discord server?': happened,
-          },
-          closed: false,
-          created_at: new Date().toISOString(),
-        };
-        saveJson(TICKETS_DB_FILE, db);
-        await backupFileToChannel(client, require('./config').TICKET_LOG_CHANNEL_ID, TICKETS_DB_FILE, path.basename(TICKETS_DB_FILE));
+      // 3) Modal submit handling
+      if (interaction.isModalSubmit && interaction.isModalSubmit()) {
+        if (!interaction.customId.startsWith('ticket_modal::')) return;
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
-        const embed = {
-          title: `Ticket #${number}`,
-          description: `**Category:** ${category}\n\n**Issue:** ${issue}\n\n**Proof:** ${proof}`,
-          color: 0xffa500,
-          footer: { text: `Opened by ${interaction.user.tag}` },
-        };
+        const category = interaction.customId.split('::')[1] || 'General';
+        const about = interaction.fields.getTextInputValue('about_user');
+        const issue = interaction.fields.getTextInputValue('issue');
+        const proof = interaction.fields.getTextInputValue('proof');
+        const happened = interaction.fields.getTextInputValue('happened_here');
 
-        // persistent close button
-        const closeButton = new ActionRowBuilder()
-          .addComponents(
+        if (happened.trim().toLowerCase().startsWith('n')) {
+          await interaction.followUp({ content: "We can only moderate situations that happen in this Discord server — this issue can't be filed as a ticket here.", ephemeral: true }).catch(() => {});
+          return;
+        }
+
+        try {
+          const channel = await client.channels.fetch(SUPPORT_TICKET_CHANNEL_ID).catch(() => null);
+          if (!channel || !channel.isTextBased()) {
+            await interaction.followUp({ content: 'Ticket channel not found.', ephemeral: true }).catch(() => {});
+            return;
+          }
+
+          const db = loadJson(TICKETS_DB_FILE, { next_number: 1, tickets: {} });
+          const number = db.next_number++;
+          const threadName = `📈┃${number}-ticket`;
+
+          // Create private thread if possible; fallback to public thread
+          let thread;
+          try {
+            thread = await channel.threads.create({ name: threadName, autoArchiveDuration: 1440, type: 11 });
+          } catch {
+            try {
+              thread = await channel.threads.create({ name: threadName, autoArchiveDuration: 1440, type: 10 });
+            } catch (e) {
+              console.error('Thread creation failed:', e);
+              await interaction.followUp({ content: 'Failed to create ticket thread.', ephemeral: true }).catch(() => {});
+              return;
+            }
+          }
+
+          try { await thread.addUser(interaction.user).catch(() => {}); } catch {}
+
+          db.tickets[thread.id] = {
+            number,
+            opener_id: interaction.user.id,
+            category,
+            answers: {
+              'Is your issue about another Discord user?': about,
+              'What is the issue you are experiencing?': issue,
+              'Do you have proof?': proof,
+              'Did the issue happen in this Discord server?': happened,
+            },
+            closed: false,
+            created_at: new Date().toISOString(),
+          };
+          saveJson(TICKETS_DB_FILE, db);
+          try { await backupFileToChannel(client, require('./config').TICKET_LOG_CHANNEL_ID, TICKETS_DB_FILE, path.basename(TICKETS_DB_FILE)); } catch {}
+
+          const embed = {
+            title: `Ticket #${number}`,
+            description: `**Category:** ${category}\n\n**Issue:** ${issue}\n\n**Proof:** ${proof}`,
+            color: 0xffa500,
+            footer: { text: `Opened by ${interaction.user.tag}` },
+          };
+
+          const closeButton = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`ticket_close_${thread.id}`).setLabel('Close').setStyle(ButtonStyle.Danger).setEmoji('🔒')
           );
 
-        // send into thread
-        if (SUPPORT_BANNER_PATH && fs.existsSync(SUPPORT_BANNER_PATH)) {
-          const file = new AttachmentBuilder(SUPPORT_BANNER_PATH, { name: SUPPORT_BANNER_FILENAME });
-          await thread.send({ content: `<@&${TICKET_PING_ROLE_ID}> ${interaction.user}`, embeds: [embed], files: [file], components: [closeButton] });
-        } else {
-          await thread.send({ content: `<@&${TICKET_PING_ROLE_ID}> ${interaction.user}`, embeds: [embed], components: [closeButton] });
+          if (SUPPORT_BANNER_PATH && fs.existsSync(SUPPORT_BANNER_PATH)) {
+            const file = new AttachmentBuilder(SUPPORT_BANNER_PATH, { name: SUPPORT_BANNER_FILENAME });
+            await thread.send({ content: `<@&${TICKET_PING_ROLE_ID}> ${interaction.user}`, embeds: [embed], files: [file], components: [closeButton] }).catch(() => {});
+          } else {
+            await thread.send({ content: `<@&${TICKET_PING_ROLE_ID}> ${interaction.user}`, embeds: [embed], components: [closeButton] }).catch(() => {});
+          }
+
+          await interaction.followUp({ content: `Ticket created: <#${thread.id}>`, ephemeral: true }).catch(() => {});
+        } catch (err) {
+          console.error('Failed to create ticket thread', err);
+          await interaction.followUp({ content: 'Failed to create ticket thread.', ephemeral: true }).catch(() => {});
         }
 
-        await interaction.followUp({ content: `Ticket created: <#${thread.id}>`, ephemeral: true });
-      } catch (err) {
-        console.error('Failed to create ticket thread', err);
-        await interaction.followUp({ content: 'Failed to create ticket thread.', ephemeral: true });
+        return;
       }
+    } catch (err) {
+      console.error('Ticket interaction handler error:', err);
     }
   });
 
@@ -255,4 +282,5 @@ async function registerTicketHandlers(client) {
 
 module.exports = {
   registerTicketHandlers,
+  createTicketModal, // exported in case main.js wants to show it directly (not required)
 };
