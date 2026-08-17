@@ -1,0 +1,1 @@
+{ "name": "dreamer-discord-bot", "version": "0.1.0", "description": "Discord bot converted from Python (partial JS port)", "main": "main.js", "engines": { "node": "18.x" }, "scripts": { "start": "node main.js", "deploy-commands": "node deploy-commands.js" }, "dependencies": { "discord.js": "^14.13.0", "axios": "^1.6.0" }, "license": "MIT" }
