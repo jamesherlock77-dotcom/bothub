@@ -1,5 +1,5 @@
-// main.js
-// Entrypoint: create client, add interaction logger, autocomplete handler, ping responder, wire modules, and login.
+// main.js (production-ready)
+// Creates the Discord client, handles team-name autocompletes, registers modules, and logs in.
 
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const path = require('path');
@@ -17,7 +17,6 @@ const { loadJson } = require('./db');
 
 const TEAMS_DB_FILE = path.join(__dirname, 'teams_data.json');
 
-// Create the client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -28,44 +27,13 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// --- Detailed interaction logger (debug) ---
-client.on(Events.InteractionCreate, async (interaction) => {
-  try {
-    console.log('--- INTERACTION START ---');
-    console.log('id:', interaction.id);
-    console.log('type:', interaction.type);
-    console.log('isChatInputCommand():', typeof interaction.isChatInputCommand === 'function' ? interaction.isChatInputCommand() : '(no method)');
-    console.log('commandName:', interaction.commandName ?? null);
-    console.log('commandId:', interaction.commandId ?? null);
-    console.log('customId:', interaction.customId ?? null);
-    console.log('user:', interaction.user ? `${interaction.user.tag} (${interaction.user.id})` : null);
-    console.log('channelId:', interaction.channelId);
-    console.log('guildId:', interaction.guildId);
-    console.log('memberRoles:', interaction.member ? Array.from(interaction.member.roles?.cache?.keys?.() || []) : null);
-    try { console.log('raw (partial):', JSON.stringify({
-      id: interaction.id,
-      type: interaction.type,
-      commandName: interaction.commandName,
-      commandId: interaction.commandId,
-      customId: interaction.customId,
-      user: interaction.user?.id,
-      channelId: interaction.channelId,
-      guildId: interaction.guildId,
-    }, null, 2)); } catch {}
-    console.log('--- INTERACTION END ---');
-  } catch (e) {
-    console.error('Failed to log interaction', e);
-  }
-});
-
-// --- Autocomplete handler: returns team-name suggestions for certain commands ---
-// Prevents "Loading failed" when users type into the team option.
+// Autocomplete handler for team-name options (prevents "Loading failed")
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.isAutocomplete?.()) return;
 
     const cmd = interaction.commandName;
-    // Commands that should use team-name autocomplete:
+    // Commands that should use team-name autocomplete
     const handledCommands = new Set([
       'teammembers',
       'startscrim',
@@ -75,8 +43,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       'bypassteamlimit',
       'sendtournament',
     ]);
+
+    // If it's not one of our handled commands, return a basic echo suggestion to keep Discord happy.
     if (!handledCommands.has(cmd)) {
-      // generic fallback (keep Discord happy)
       const focused = interaction.options.getFocused?.() ?? '';
       await interaction.respond([{ name: String(focused || '(no suggestion)').slice(0, 100), value: String(focused || '') }]).catch(() => {});
       return;
@@ -86,38 +55,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const db = loadJson(TEAMS_DB_FILE, { teams: {} });
     const names = Object.keys(db.teams || {}).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     const matches = names.filter(n => n.toLowerCase().includes(focused)).slice(0, 25);
+
     if (matches.length === 0) {
-      // Return a harmless placeholder so Discord doesn't show "Loading failed"
       await interaction.respond([{ name: '(no matching teams)', value: '__none__' }]).catch(() => {});
       return;
     }
+
     const choices = matches.map(n => ({ name: n, value: n }));
-    await interaction.respond(choices).catch((err) => {
-      console.error('Failed to respond to autocomplete:', err);
-    });
-    console.log(`Autocomplete suggestions for /${cmd} (${interaction.user?.tag}): ${matches.slice(0,5).join(', ')}`);
+    await interaction.respond(choices).catch((err) => console.error('Failed to respond to autocomplete:', err));
   } catch (err) {
     console.error('Autocomplete handler error:', err);
   }
 });
 
-// --- Simple /ping handler for end-to-end test ---
-client.on(Events.InteractionCreate, async (interaction) => {
-  try {
-    if (!interaction.isChatInputCommand?.()) return;
-    if (interaction.commandName === 'ping') {
-      // Use reply; ephemeral flagged for user-only visibility
-      await interaction.reply({ content: 'pong', ephemeral: true }).catch(async (err) => {
-        // fallback to followup if needed
-        try { await interaction.followUp({ content: 'pong', ephemeral: true }).catch(() => {}); } catch {}
-      });
-    }
-  } catch (err) {
-    console.error('Ping command handler error:', err);
+// Optional debug handlers (if you added teams-debug.js for troubleshooting)
+try {
+  // This file is optional — only require/register it if present.
+  // It provides temporary debug handlers and will not be present in production.
+  // If you use it, ensure it's removed once debugging is complete.
+  // eslint-disable-next-line global-require
+  const { registerTeamDebugHandlers } = require('./teams-debug');
+  if (typeof registerTeamDebugHandlers === 'function') {
+    registerTeamDebugHandlers(client);
+    console.log('Registered optional teams-debug handlers.');
   }
-});
+} catch {
+  // ignore — debug module not present
+}
 
-// Wire up your existing modules (they expect a client instance)
+// Register main bot modules
 registerTicketHandlers(client);
 registerTournamentHandlers(client);
 registerTeamHandlers(client);
@@ -126,7 +92,7 @@ registerGiveawayHandlers(client);
 registerScrimHandlers(client);
 registerMetaHandlers(client);
 
-// Optional: refresh leaderboard on ready (safe no-op if canvas not installed)
+// Ready hook
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag} (${client.user.id})`);
   try {
@@ -136,7 +102,7 @@ client.once('ready', async () => {
   }
 });
 
-// Helpful global error logging
+// Global error logging
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled rejection:', err);
 });
