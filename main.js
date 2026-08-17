@@ -1,6 +1,4 @@
-// main.js
-// Entrypoint: create client, add interaction logger, wire modules, and login.
-
+// main.js (debug mode) — temporary. Reverts to regular when done.
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const config = require('./config');
 
@@ -24,38 +22,48 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// --- Interaction logger (debug) ---
-// Logs every interaction that reaches the bot so you can confirm Discord sends them here.
+// Detailed interaction logger for debugging
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    console.log('INTERACTION:', {
-      id: interaction.id,
-      type: interaction.type,
-      isChatInput: typeof interaction.isChatInputCommand === 'function' ? interaction.isChatInputCommand() : false,
-      commandName: interaction.isChatInputCommand ? (interaction.commandName || null) : null,
-      customId: interaction.isButton ? (interaction.customId || null) : null,
-      user: interaction.user ? `${interaction.user.tag} (${interaction.user.id})` : null,
-      channelId: interaction.channelId,
-      guildId: interaction.guildId,
-    });
+    console.log('--- INTERACTION START ---');
+    console.log('id:', interaction.id);
+    console.log('type:', interaction.type);
+    console.log('isChatInputCommand():', typeof interaction.isChatInputCommand === 'function' ? interaction.isChatInputCommand() : '(no method)');
+    console.log('commandName:', interaction.commandName ?? null);
+    console.log('commandId:', interaction.commandId ?? null);
+    console.log('customId:', interaction.customId ?? null);
+    console.log('user:', interaction.user ? `${interaction.user.tag} (${interaction.user.id})` : null);
+    console.log('channelId:', interaction.channelId);
+    console.log('guildId:', interaction.guildId);
+    console.log('memberRoles:', interaction.member ? Array.from(interaction.member.roles?.cache?.keys?.() || []) : null);
+    // If possible, log the raw data (be careful with large objects)
+    try { console.log('raw:', JSON.stringify(interaction, ['id','type','commandName','commandId','customId','user','channelId','guildId','token'], 2)); } catch {}
+    console.log('--- INTERACTION END ---');
   } catch (e) {
     console.error('Failed to log interaction', e);
   }
 });
 
-// --- Simple /ping handler for end-to-end test ---
+// Temporary global chat-input responder — replies to every chat input command with a short ephemeral debug message.
+// This confirms the bot can *send* replies in response to commands. Remove this block after debugging.
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName === 'ping') {
-      await interaction.reply({ content: 'pong', ephemeral: true });
+    // If you want this handler to be last, ensure modules are registered first; it's fine for debugging.
+    const cmd = interaction.commandName;
+    // Reply only if not already replied — use reply if possible, otherwise followUp
+    try {
+      await interaction.reply({ content: `DEBUG: Received command /${cmd}`, ephemeral: true });
+    } catch (err) {
+      // If reply fails because interaction already replied, send followup
+      try { await interaction.followUp({ content: `DEBUG: Received command /${cmd} (followup)`, ephemeral: true }); } catch {}
     }
   } catch (err) {
-    console.error('Ping command handler error:', err);
+    console.error('Debug responder error:', err);
   }
 });
 
-// Wire up your modules (they expect a client instance)
+// Wire up your modules (they still run; they may also reply — this is fine)
 registerTicketHandlers(client);
 registerTournamentHandlers(client);
 registerTeamHandlers(client);
@@ -64,7 +72,7 @@ registerGiveawayHandlers(client);
 registerScrimHandlers(client);
 registerMetaHandlers(client);
 
-// Optional: refresh leaderboard on ready (safe no-op if canvas not installed)
+// Ready
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag} (${client.user.id})`);
   try {
@@ -74,7 +82,7 @@ client.once('ready', async () => {
   }
 });
 
-// Helpful global error logging
+// Errors
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled rejection:', err);
 });
