@@ -1,26 +1,24 @@
 // deploy-commands.js
-// Registers slash commands for your bot. Run this locally or in CI with NODE_ENV vars set.
-// Usage: DISCORD_TOKEN=... NODE_ENV=production node deploy-commands.js
+// Register slash commands (includes /ping).
+// Usage:
+// DISCORD_TOKEN=... DISCORD_CLIENT_ID=... DISCORD_GUILD_ID=... node deploy-commands.js
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 const config = require('./config');
 
-const token = process.env[config.DISCORD_TOKEN_ENV];
+const token = process.env[config.DISCORD_TOKEN_ENV] || process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional for quick dev registration
+
 if (!token) {
   console.error('DISCORD_TOKEN not set');
   process.exit(1);
 }
-
-// Replace with your application ID / guild ID if you want guild-scoped commands during development.
-// For global commands use application ID only (takes up to an hour to propagate).
-const CLIENT_ID = process.env.DISCORD_CLIENT_ID; // set this env var to your bot/app client ID
-const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional: for faster testing, set a dev guild ID
-
 if (!CLIENT_ID) {
   console.error('Set DISCORD_CLIENT_ID env var (bot application ID).');
   process.exit(1);
 }
 
-// Build commands
+// Build command list (add more as you implement)
 const commands = [
   new SlashCommandBuilder().setName('createteam').setDescription('Create a new team')
     .addStringOption(opt => opt.setName('name').setDescription('Team name').setRequired(true))
@@ -38,7 +36,8 @@ const commands = [
     .addUserOption(opt => opt.setName('hosted').setDescription("Who's hosting the giveaway")),
   new SlashCommandBuilder().setName('syncinvites').setDescription('Rebuild the invite DB by rescanning the invite tracker channel'),
   new SlashCommandBuilder().setName('checkupdate').setDescription('Check for an Animal Company update manually'),
-  // More commands can be added here as needed.
+  // Simple test command:
+  new SlashCommandBuilder().setName('ping').setDescription('Ping test'),
 ].map(c => c.toJSON());
 
 (async () => {
@@ -46,20 +45,15 @@ const commands = [
   try {
     if (GUILD_ID) {
       console.log('Refreshing guild commands...');
-      await rest.put(
-        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-        { body: commands },
-      );
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
       console.log('Successfully reloaded guild application (/) commands.');
     } else {
       console.log('Refreshing global commands (may take up to an hour)...');
-      await rest.put(
-        Routes.applicationCommands(CLIENT_ID),
-        { body: commands },
-      );
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
       console.log('Successfully reloaded global application (/) commands.');
     }
   } catch (err) {
     console.error('Failed to deploy commands', err);
+    process.exit(1);
   }
 })();
