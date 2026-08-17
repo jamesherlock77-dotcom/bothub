@@ -1,10 +1,13 @@
 // main.js (production-ready)
-// Creates the Discord client, handles team-name autocompletes, registers modules, and logs in.
+// Creates the Discord client, handles autocomplete, registers modules, and logs DB files at startup.
 
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const path = require('path');
+const fs = require('fs');
+
 const config = require('./config');
 
+// Module handlers (expect these files to exist)
 const { registerTicketHandlers } = require('./ticket');
 const { registerTournamentHandlers } = require('./tournamentsignups');
 const { registerTeamHandlers } = require('./teams');
@@ -13,9 +16,9 @@ const { registerGiveawayHandlers } = require('./giveaways');
 const { registerScrimHandlers } = require('./scrims');
 const { registerMetaHandlers } = require('./metaupdate');
 const { refreshLeaderboardMessage } = require('./leaderboard');
-const { loadJson } = require('./db');
 
-const TEAMS_DB_FILE = path.join(__dirname, 'teams_data.json');
+const { loadJson, TEAMS_DB_FILE, TICKETS_DB_FILE } = require('./db');
+const { safeDeferReply, safeReply } = require('./utils/interaction');
 
 const client = new Client({
   intents: [
@@ -27,13 +30,32 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// Autocomplete handler for team-name options (prevents "Loading failed")
+// --- Startup DB preview for debugging ---
+function _logFilePreview(filePath, label) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.log(`DB CHECK: ${label} missing at ${filePath}`);
+      return;
+    }
+    const stat = fs.statSync(filePath);
+    console.log(`DB CHECK: ${label} exists at ${filePath} size=${stat.size} bytes`);
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const preview = raw.slice(0, 1024);
+    console.log(`DB PREVIEW (${label}):\n${preview}${raw.length > 1024 ? '\n...[truncated]' : ''}`);
+  } catch (err) {
+    console.error(`DB CHECK ERROR (${label}):`, err && err.message ? err.message : err);
+  }
+}
+
+_logFilePreview(TEAMS_DB_FILE, 'teams_data.json (candidate)');
+_logFilePreview(TICKETS_DB_FILE, 'tickets_data.json (candidate)');
+
+// --- Autocomplete handler for team-name options ---
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.isAutocomplete?.()) return;
 
     const cmd = interaction.commandName;
-    // Commands that should use team-name autocomplete
     const handledCommands = new Set([
       'teammembers',
       'startscrim',
@@ -44,7 +66,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       'sendtournament',
     ]);
 
-    // If it's not one of our handled commands, return a basic echo suggestion to keep Discord happy.
     if (!handledCommands.has(cmd)) {
       const focused = interaction.options.getFocused?.() ?? '';
       await interaction.respond([{ name: String(focused || '(no suggestion)').slice(0, 100), value: String(focused || '') }]).catch(() => {});
@@ -60,7 +81,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.respond([{ name: '(no matching teams)', value: '__none__' }]).catch(() => {});
       return;
     }
-
     const choices = matches.map(n => ({ name: n, value: n }));
     await interaction.respond(choices).catch((err) => console.error('Failed to respond to autocomplete:', err));
   } catch (err) {
@@ -68,22 +88,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-// Optional debug handlers (if you added teams-debug.js for troubleshooting)
+// --- Register optional debug handlers if present (teams-debug) ---
 try {
-  // This file is optional — only require/register it if present.
-  // It provides temporary debug handlers and will not be present in production.
-  // If you use it, ensure it's removed once debugging is complete.
-  // eslint-disable-next-line global-require
   const { registerTeamDebugHandlers } = require('./teams-debug');
   if (typeof registerTeamDebugHandlers === 'function') {
     registerTeamDebugHandlers(client);
     console.log('Registered optional teams-debug handlers.');
   }
 } catch {
-  // ignore — debug module not present
+  // ignore if missing
 }
 
-// Register main bot modules
+// --- Register main modules ---
 registerTicketHandlers(client);
 registerTournamentHandlers(client);
 registerTeamHandlers(client);
@@ -92,7 +108,7 @@ registerGiveawayHandlers(client);
 registerScrimHandlers(client);
 registerMetaHandlers(client);
 
-// Ready hook
+// --- Ready hook ---
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag} (${client.user.id})`);
   try {
@@ -102,9 +118,15 @@ client.once('ready', async () => {
   }
 });
 
-// Global error logging
+// Global and client-level error handling
 process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection:', err);
+  console.error('Unhandled rejection:', err && err.stack ? err.stack : err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err && err.stack ? err.stack : err);
+});
+client.on('error', (err) => {
+  console.error('Discord client error:', err && err.stack ? err.stack : err);
 });
 
 // Login
